@@ -324,10 +324,11 @@ class Enhanced_RRSIS_UOT(nn.Module):
             
         input_points = torch.zeros(B, 0, 2, device=device)
         input_points_mask = torch.zeros(B, 0, device=device, dtype=torch.bool)
+        input_point_labels = torch.zeros(B, 0, device=device, dtype=torch.long)
         
         if P_map is not None:
-            # Generate explicit geometric prompts from structural alignment
-            input_points, input_points_mask, _ = self.gpg(P_map, text_mask, self.image_size, device)
+            # Generate explicit geometric prompts from structural alignment with Scale-Aware Prompting
+            input_points, input_points_mask, input_point_labels = self.gpg(P_map, text_mask, self.image_size, device)
 
         find_input = FindStage(
             img_ids=img_ids,
@@ -339,10 +340,24 @@ class Enhanced_RRSIS_UOT(nn.Module):
             input_points_mask=input_points_mask,
         )
 
-        geometric_prompt = Prompt(
-            box_embeddings=torch.zeros(0, B, 4, device=device),
-            box_mask=torch.zeros(B, 0, device=device, dtype=torch.bool),
-        )
+        if P_map is not None:
+            # point_embeddings: [N_points, B, 2] - Must be normalized to [0, 1] for SAM3 pos encoder
+            point_embeddings = (input_points / self.image_size).transpose(0, 1)
+            # point_labels: [N_points, B]
+            point_labels = input_point_labels.transpose(0, 1)
+            
+            geometric_prompt = Prompt(
+                box_embeddings=torch.zeros(0, B, 4, device=device),
+                box_mask=torch.zeros(B, 0, device=device, dtype=torch.bool),
+                point_embeddings=point_embeddings,
+                point_mask=input_points_mask,
+                point_labels=point_labels,
+            )
+        else:
+            geometric_prompt = Prompt(
+                box_embeddings=torch.zeros(0, B, 4, device=device),
+                box_mask=torch.zeros(B, 0, device=device, dtype=torch.bool),
+            )
 
         # ====== Step 4: Encode Prompt ======
         prompt, prompt_mask, backbone_out = self.sam3._encode_prompt(

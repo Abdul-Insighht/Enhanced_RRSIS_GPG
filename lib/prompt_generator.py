@@ -52,17 +52,23 @@ class GroundingAwarePromptGenerator(nn.Module):
         heatmap = P_valid.sum(dim=-1)  # (B, HW)
         heatmap = heatmap.view(B, H, W)
 
-        # 3. Generate Sparse Prompts (Top-K Points)
-        # Flatten and get topk
+        # 3. Scale-Aware Prompting (SAP) from ReSaP & Sparse Prompts Generation
         flat_heatmap = heatmap.view(B, -1)
-        _, topk_idx = torch.topk(flat_heatmap, self.num_points, dim=-1)
+        
+        # Measure target area ratio for scale awareness
+        b_max = flat_heatmap.max(dim=1, keepdim=True)[0] + 1e-6
+        norm_heatmap = flat_heatmap / b_max
+        active_area = (norm_heatmap > 0.5).sum(dim=1).float() / (H * W)
+        
+        # Extract max 5 points for structure coverage
+        K_max = 5
+        _, topk_idx = torch.topk(flat_heatmap, K_max, dim=-1)
 
         # Convert 1D indices to 2D (y, x) coordinates in the feature map space
         y_feat = torch.div(topk_idx, W, rounding_mode='floor')
         x_feat = topk_idx % W
 
         # Scale coordinates to the original image size
-        # Feature map size is H x W. Image size is original_image_size x original_image_size
         scale_y = original_image_size / H
         scale_x = original_image_size / W
 
@@ -70,24 +76,19 @@ class GroundingAwarePromptGenerator(nn.Module):
         x_img = (x_feat.float() + 0.5) * scale_x
 
         # SAM3 expects points as (x, y)
-        points = torch.stack((x_img, y_img), dim=-1)  # (B, num_points, 2)
-        points_mask = torch.ones((B, self.num_points), dtype=torch.bool, device=device)
-
-        # 4. Generate Dense Prompts (Masks)
-        # SAM3 prompt encoder expects dense masks to be typically 256x256 (1/4 of 1024)
-        # For 504x504, 256x256 is fine, SAM3 will interpolate internally if needed.
-        dense_mask = F.interpolate(
-            heatmap.unsqueeze(1),  # (B, 1, H, W)
-            size=(256, 256),
-            mode='bilinear',
-            align_corners=False
-        )
+        points = torch.stack((x_img, y_img), dim=-1)  # (B, K_max, 2)
         
-        # Normalize dense mask to roughly [0, 1] or standard normal
-        b_max = dense_mask.view(B, -1).max(dim=1)[0].view(B, 1, 1, 1) + 1e-6
-        dense_mask = dense_mask / b_max
-
-        # We don't return dense mask as it's not strictly necessary for find_stage unless we modify it heavily.
-        # Providing points is the most critical part of Grounding-first.
+        # Initialize masks and labels (1 = foreground point, -1 = padding/ignore)
+        points_mask = torch.ones((B, K_max), dtype=torch.bool, device=device)
+        point_labels = torch.ones((B, K_max), dtype=torch.long, device=device)
         
-        return points, points_mask, dense_mask
+        # Apply dynamic scale-adaptive logic per image in the batch
+        for b in range(B):
+            if active_area[b] < 0.01:
+                # Tiny object: Keep only 1 center point to avoid background noise
+                points_mask[b, 1:] = False
+                point_labels[b, 1:] = -1
+
+        # We intentionally omit the dense_mask because SAM3's Image Predictor GeometryEncoder 
+        # is not pre-trained with a MaskEncoder. Passing it would introduce untrained parameters.
+        return points, points_mask, point_labels
