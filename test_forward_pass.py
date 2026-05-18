@@ -9,12 +9,14 @@ def test_forward():
     print("Initializing Model...")
     # Initialize the model on CPU for a quick shape test
     model = Enhanced_RRSIS_UOT(
+        sam3_ckpt=None,
         image_size=504,
-        bpe_path=None,  # Not needed for mock text_feats
-        use_ot_alignment=True,
-        ot_num_layers=1,
         lora_rank=4,
-        device='cpu'
+        lora_alpha=8.0,
+        use_dynamic_lora=True,
+        use_contrastive_loss=True,
+        use_multiscale_ot=True,
+        use_ohem_loss=True,
     )
     
     B = 2
