@@ -100,6 +100,7 @@ class Enhanced_RRSIS_UOT(nn.Module):
         use_ohem_loss: bool = True,
         # === Enhancement params ===
         contrastive_weight: float = 0.1,
+        scl_weight: float = 0.1,
         ohem_hard_ratio: float = 0.3,
         ot_reg: float = 0.1,
         ot_num_iter: int = 10,
@@ -112,6 +113,7 @@ class Enhanced_RRSIS_UOT(nn.Module):
         self.use_multiscale_ot = use_multiscale_ot
         self.use_ohem_loss = use_ohem_loss
         self.contrastive_weight = contrastive_weight
+        self.scl_weight = scl_weight
 
         # ====== Build SAM3 Image Model ======
         print("[Enhanced_RRSIS_UOT] Building SAM3 image model...")
@@ -429,38 +431,16 @@ class Enhanced_RRSIS_UOT(nn.Module):
             contrastive = torch.tensor(0.0, device=device)
             if self.use_contrastive_loss and hasattr(self, 'contrastive_loss'):
                 try:
-                    # Get visual features for contrastive learning
-                    visual_feats = encoder_out.get('encoder_hidden_states', None)
-                    if visual_feats is not None and text_feats is not None:
-                        C = visual_feats.shape[-1]
-
-                        if visual_feats.dim() == 2:
-                            # SAM3 format: (N_total, C) — flatten of all tokens
-                            N_total = visual_feats.shape[0]
-                            if N_total % B == 0:
-                                N_per = N_total // B
-                                vis_batched = visual_feats.view(B, N_per, C)  # (B, N, C)
-                            else:
-                                # Uneven split — pool everything per batch
-                                vis_batched = visual_feats.unsqueeze(0).expand(B, -1, -1)
-
-                        elif visual_feats.dim() == 3:
-                            if visual_feats.shape[0] == B:
-                                vis_batched = visual_feats  # Already (B, N, C)
-                            else:
-                                # (N_total, seq, C) — reshape to (B, -1, C)
-                                vis_batched = visual_feats.reshape(B, -1, C)
-                        else:
-                            vis_batched = None
-
-                        if vis_batched is not None:
-                            # Pool to (B, C) then create small spatial map
-                            vis_pooled = vis_batched.mean(dim=1)  # (B, C)
-                            vis_spatial = vis_pooled.unsqueeze(-1).unsqueeze(-1)  # (B, C, 1, 1)
-                            vis_spatial = vis_spatial.expand(B, C, 4, 4).contiguous()  # (B, C, 4, 4)
-
+                    # Use FPN features with real spatial structure (not pooled encoder output)
+                    fpn_feats = backbone_out.get('backbone_fpn', None)
+                    if fpn_feats is not None and text_feats is not None and len(fpn_feats) > 0:
+                        # Use highest-resolution FPN level for spatial contrastive learning
+                        vis_feat = fpn_feats[0]
+                        if hasattr(vis_feat, 'tensors'):
+                            vis_feat = vis_feat.tensors
+                        if vis_feat.dim() == 4:  # (B, C, H, W)
                             contrastive = self.contrastive_loss(
-                                vis_spatial, text_feats,
+                                vis_feat, text_feats,
                                 result['pred_masks'], masks_gt
                             )
                 except Exception as e:
@@ -469,7 +449,7 @@ class Enhanced_RRSIS_UOT(nn.Module):
                         print(f"[WARNING] Contrastive loss skipped: {e}")
                     contrastive = torch.tensor(0.0, device=device)
 
-            result['loss'] = seg_loss + self.contrastive_weight * contrastive + 0.1 * scl_loss
+            result['loss'] = seg_loss + self.contrastive_weight * contrastive + self.scl_weight * scl_loss
             result['seg_loss'] = seg_loss.detach()
             result['scl_loss'] = scl_loss.detach() if isinstance(scl_loss, torch.Tensor) else scl_loss
             result['contrastive_loss'] = contrastive.detach() if isinstance(contrastive, torch.Tensor) else contrastive
@@ -490,6 +470,9 @@ class Enhanced_RRSIS_UOT(nn.Module):
 
         pred_masks = out.get('pred_masks', None)
         if pred_masks is not None:
+            # Store all query masks for IoU-based score supervision
+            result['all_query_masks'] = pred_masks  # (B, N, H_mask, W_mask)
+
             if pred_logits is not None:
                 scores = pred_logits.squeeze(-1)
                 best_idx = scores.argmax(dim=-1)

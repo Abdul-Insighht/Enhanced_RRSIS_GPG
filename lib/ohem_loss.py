@@ -301,7 +301,10 @@ class EnhancedOHEMLoss(nn.Module):
         # 4. Score supervision (optional)
         score_loss = torch.tensor(0.0, device=gt_masks.device)
         if 'pred_logits' in outputs and outputs['pred_logits'] is not None:
-            score_loss = self._compute_score_loss(outputs['pred_logits'], gt_masks)
+            score_loss = self._compute_score_loss(
+                outputs['pred_logits'], gt_masks,
+                outputs.get('all_query_masks', None)
+            )
 
         total = (
             self.ohem_weight * ohem +
@@ -312,17 +315,48 @@ class EnhancedOHEMLoss(nn.Module):
 
         return total
 
-    def _compute_score_loss(self, pred_logits, gt_masks):
-        """Supervise query confidence scores."""
+    def _compute_score_loss(self, pred_logits, gt_masks, all_query_masks=None):
+        """Supervise query confidence scores with IoU-based matching.
+        
+        The query whose mask best overlaps with GT gets target=1.0,
+        others get target=0.0. This teaches the model to rank its own
+        mask hypotheses by quality.
+        """
         B = gt_masks.shape[0]
         device = gt_masks.device
 
         if pred_logits.dim() == 3:
-            scores = pred_logits.squeeze(-1)
+            scores = pred_logits.squeeze(-1)  # (B, N)
             N = scores.shape[1]
             with torch.no_grad():
-                has_object = (gt_masks.sum(dim=(1, 2, 3)) > 0).float()
-                target_scores = has_object.unsqueeze(1).expand(B, N) / N
+                has_object = (gt_masks.sum(dim=(1, 2, 3)) > 0).float()  # (B,)
+
+                if all_query_masks is not None and has_object.sum() > 0:
+                    # IoU-based matching: find which query best matches GT
+                    # all_query_masks: (B, N, H_mask, W_mask)
+                    qm = all_query_masks
+                    gt_for_iou = gt_masks.float()
+                    if qm.shape[-2:] != gt_for_iou.shape[-2:]:
+                        gt_for_iou = F.interpolate(
+                            gt_for_iou, qm.shape[-2:], mode='nearest'
+                        )
+                    # Expand GT: (B, 1, H, W) -> (B, N, H, W)
+                    gt_expanded = gt_for_iou.squeeze(1).unsqueeze(1).expand_as(qm)
+                    pred_binary = (torch.sigmoid(qm) > 0.5).float()
+                    intersection = (pred_binary * gt_expanded).sum(dim=(2, 3))  # (B, N)
+                    union = pred_binary.sum(dim=(2, 3)) + gt_expanded.sum(dim=(2, 3)) - intersection
+                    per_query_iou = (intersection + 1e-6) / (union + 1e-6)  # (B, N)
+
+                    # Best query -> 1.0, others -> 0.0
+                    target_scores = torch.zeros_like(scores)
+                    best_query = per_query_iou.argmax(dim=1)  # (B,)
+                    target_scores[torch.arange(B, device=device), best_query] = 1.0
+                    # Zero out targets for empty-mask samples
+                    target_scores = target_scores * has_object.unsqueeze(1)
+                else:
+                    # Fallback for empty masks: all targets = 0
+                    target_scores = torch.zeros_like(scores)
+
             loss = F.binary_cross_entropy_with_logits(
                 scores, target_scores, reduction='mean'
             )

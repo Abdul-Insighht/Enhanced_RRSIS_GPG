@@ -320,7 +320,7 @@ def main():
     optimizer = get_optimizer(model, args)
     steps_per_epoch = len(train_loader) // args.grad_accum_steps
     scheduler = get_scheduler(optimizer, args, steps_per_epoch)
-    scaler = torch.cuda.amp.GradScaler(enabled=args.fp16)
+    scaler = torch.amp.GradScaler('cuda', enabled=args.fp16)
 
     # ====== Resume ======
     start_epoch = 0

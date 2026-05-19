@@ -73,7 +73,8 @@ class OTSegmentationLoss(nn.Module):
                 and outputs['pred_logits'] is not None
                 and gt_masks is not None):
             score_loss = self._compute_score_loss(
-                outputs['pred_logits'], gt_masks
+                outputs['pred_logits'], gt_masks,
+                outputs.get('all_query_masks', None)
             )
 
         # === 3. Total Loss ===
@@ -103,12 +104,13 @@ class OTSegmentationLoss(nn.Module):
 
         return self.bce_weight * bce + self.dice_weight * dice
 
-    def _compute_score_loss(self, pred_logits, gt_masks):
+    def _compute_score_loss(self, pred_logits, gt_masks, all_query_masks=None):
         """
-        Supervise query confidence scores.
+        Supervise query confidence scores with IoU-based matching.
 
-        The best query (highest score) should predict IoU with the GT mask.
-        Other queries should predict low confidence.
+        The query whose mask best overlaps with GT gets target=1.0,
+        others get target=0.0. This teaches the model to rank its own
+        mask hypotheses by quality.
         """
         B = gt_masks.shape[0]
         device = gt_masks.device
@@ -118,15 +120,29 @@ class OTSegmentationLoss(nn.Module):
             scores = pred_logits.squeeze(-1)  # (B, N)
             N = scores.shape[1]
 
-            # Target: the best query (argmax) should have score=1, rest=0
-            # This encourages the model to concentrate on one query
             with torch.no_grad():
-                # Check if GT mask is non-empty
                 has_object = (gt_masks.sum(dim=(1, 2, 3)) > 0).float()  # (B,)
-                # Best query target: all queries get low score except we don't
-                # know which one is best yet, so use soft target based on
-                # whether there's an object at all
-                target_scores = has_object.unsqueeze(1).expand(B, N) / N
+
+                if all_query_masks is not None and has_object.sum() > 0:
+                    # IoU-based matching: find which query best matches GT
+                    qm = all_query_masks  # (B, N, H_mask, W_mask)
+                    gt_for_iou = gt_masks.float()
+                    if qm.shape[-2:] != gt_for_iou.shape[-2:]:
+                        gt_for_iou = F.interpolate(
+                            gt_for_iou, qm.shape[-2:], mode='nearest'
+                        )
+                    gt_expanded = gt_for_iou.squeeze(1).unsqueeze(1).expand_as(qm)
+                    pred_binary = (torch.sigmoid(qm) > 0.5).float()
+                    intersection = (pred_binary * gt_expanded).sum(dim=(2, 3))
+                    union = pred_binary.sum(dim=(2, 3)) + gt_expanded.sum(dim=(2, 3)) - intersection
+                    per_query_iou = (intersection + 1e-6) / (union + 1e-6)  # (B, N)
+
+                    target_scores = torch.zeros_like(scores)
+                    best_query = per_query_iou.argmax(dim=1)
+                    target_scores[torch.arange(B, device=device), best_query] = 1.0
+                    target_scores = target_scores * has_object.unsqueeze(1)
+                else:
+                    target_scores = torch.zeros_like(scores)
 
             loss = F.binary_cross_entropy_with_logits(
                 scores, target_scores, reduction='mean'

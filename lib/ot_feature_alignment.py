@@ -53,6 +53,8 @@ class OTFeatureAligner(nn.Module):
     def sinkhorn(self, cost_matrix):
         """
         Balanced Sinkhorn algorithm for OT.
+        Forces FP32 to prevent underflow: exp(-cost/0.1) underflows in FP16
+        for cost >= 1.0 (common with cosine distance).
 
         Args:
             cost_matrix: (B, N_img, N_txt) pairwise cost.
@@ -60,23 +62,31 @@ class OTFeatureAligner(nn.Module):
         Returns:
             Transport plan P of shape (B, N_img, N_txt).
         """
-        B, N, M = cost_matrix.shape
+        orig_dtype = cost_matrix.dtype
+        device_type = 'cuda' if cost_matrix.is_cuda else 'cpu'
 
-        # Uniform marginals
-        mu = torch.full((B, N), 1.0 / N, device=cost_matrix.device)
-        nu = torch.full((B, M), 1.0 / M, device=cost_matrix.device)
+        # Disable autocast and force FP32 — FP16 exp(-x) underflows for x > ~10
+        with torch.amp.autocast(device_type, enabled=False):
+            cost_matrix = cost_matrix.float()
+            B, N, M = cost_matrix.shape
 
-        # Gibbs kernel
-        K = torch.exp(-cost_matrix / self.reg)
+            # Uniform marginals
+            mu = torch.full((B, N), 1.0 / N, device=cost_matrix.device, dtype=torch.float32)
+            nu = torch.full((B, M), 1.0 / M, device=cost_matrix.device, dtype=torch.float32)
 
-        u = torch.ones_like(mu)
-        for _ in range(self.num_iter):
-            v = nu / (torch.bmm(K.transpose(1, 2), u.unsqueeze(2)).squeeze(2) + 1e-8)
-            u = mu / (torch.bmm(K, v.unsqueeze(2)).squeeze(2) + 1e-8)
+            # Gibbs kernel
+            K = torch.exp(-cost_matrix / self.reg)
+            K = K.clamp(min=1e-8)  # Numerical stability
 
-        # Transport plan: P = diag(u) @ K @ diag(v)
-        P = u.unsqueeze(2) * K * v.unsqueeze(1)
-        return P
+            u = torch.ones_like(mu)
+            for _ in range(self.num_iter):
+                v = nu / (torch.bmm(K.transpose(1, 2), u.unsqueeze(2)).squeeze(2) + 1e-8)
+                u = mu / (torch.bmm(K, v.unsqueeze(2)).squeeze(2) + 1e-8)
+
+            # Transport plan: P = diag(u) @ K @ diag(v)
+            P = u.unsqueeze(2) * K * v.unsqueeze(1)
+
+        return P.to(orig_dtype)
 
     def forward(self, img_feat, text_feat, text_mask=None):
         """

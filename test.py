@@ -83,7 +83,7 @@ def evaluate(model, test_loader, device, args):
                 ious_for_caps = []
                 for cap in cap_list:
                     start = time.time()
-                    with torch.cuda.amp.autocast(enabled=True):
+                    with torch.amp.autocast('cuda', enabled=True):
                         outputs = model(images[0:1], [cap], masks[0:1])
                     total_time += time.time() - start
 
@@ -101,7 +101,7 @@ def evaluate(model, test_loader, device, args):
         else:
             # Single caption per sample
             start = time.time()
-            with torch.cuda.amp.autocast(enabled=True):
+            with torch.amp.autocast('cuda', enabled=True):
                 outputs = model(images, captions, masks)
             total_time += time.time() - start
 
@@ -149,7 +149,7 @@ def save_predictions(model, test_loader, device, output_dir, args):
         if isinstance(captions[0], list):
             captions = [cap[0] for cap in captions]
 
-        with torch.cuda.amp.autocast(enabled=True):
+        with torch.amp.autocast('cuda', enabled=True):
             outputs = model(images, captions)
 
         pred_probs = torch.sigmoid(outputs['pred_masks'])
