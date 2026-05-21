@@ -78,7 +78,7 @@ class GroundingAwarePromptGenerator(nn.Module):
         # SAM3 expects points as (x, y)
         points = torch.stack((x_img, y_img), dim=-1)  # (B, K_max, 2)
         
-        # Initialize masks and labels (1 = foreground point, -1 = padding/ignore)
+        # Initialize masks and labels (1 = foreground point, 0 = padding/ignore)
         points_mask = torch.ones((B, K_max), dtype=torch.bool, device=device)
         point_labels = torch.ones((B, K_max), dtype=torch.long, device=device)
         
@@ -87,7 +87,7 @@ class GroundingAwarePromptGenerator(nn.Module):
             if active_area[b] < 0.01:
                 # Tiny object: Keep only 1 center point to avoid background noise
                 points_mask[b, 1:] = False
-                point_labels[b, 1:] = -1
+                point_labels[b, 1:] = 0
 
         # We intentionally omit the dense_mask because SAM3's Image Predictor GeometryEncoder 
         # is not pre-trained with a MaskEncoder. Passing it would introduce untrained parameters.

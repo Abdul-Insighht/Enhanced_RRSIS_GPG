@@ -32,11 +32,7 @@ from lib.enhanced_model import Enhanced_RRSIS_UOT
 from lib.rs_adapters import get_trainable_params_summary
 import utils
 
-try:
-    import wandb
-    HAS_WANDB = True
-except ImportError:
-    HAS_WANDB = False
+HAS_WANDB = False
 
 
 def set_seed(seed):
@@ -244,6 +240,15 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, device, e
             log_dict['cl_loss'] = outputs['contrastive_loss'].item() if isinstance(outputs['contrastive_loss'], torch.Tensor) else outputs['contrastive_loss']
 
         metric_logger.update(**log_dict)
+
+    # Handle remaining gradients at the end of epoch
+    if len(train_loader) % args.grad_accum_steps != 0:
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad()
+        scheduler.step()
 
     return metric_logger.meters['loss'].global_avg, metric_logger.meters['iou'].global_avg
 

@@ -95,7 +95,7 @@ class FocalDiceLoss(nn.Module):
         focal_weight: Weight for Focal loss component.
     """
 
-    def __init__(self, alpha=0.75, gamma=2.0, dice_weight=5.0, focal_weight=2.0):
+    def __init__(self, alpha=0.75, gamma=2.0, dice_weight=1.0, focal_weight=1.0):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
