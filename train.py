@@ -102,34 +102,56 @@ def get_optimizer(model, args):
             other_params.append(param)
 
     param_groups = [
-        {'params': lora_params, 'lr': args.lr_backbone, 'name': 'lora_adapters'},
-        {'params': enhancement_params, 'lr': args.lr_decoder, 'name': 'enhancements'},
-        {'params': decoder_params, 'lr': args.lr_decoder, 'name': 'decoder'},
-        {'params': other_params, 'lr': args.lr, 'name': 'other'},
+        {'params': lora_params, 'lr': args.lr_backbone, 'weight_decay': args.weight_decay, 'name': 'lora_adapters'},
+        {'params': enhancement_params, 'lr': args.lr_decoder, 'weight_decay': args.weight_decay_decoder, 'name': 'enhancements'},
+        {'params': decoder_params, 'lr': args.lr_decoder, 'weight_decay': args.weight_decay_decoder, 'name': 'decoder'},
+        {'params': other_params, 'lr': args.lr, 'weight_decay': args.weight_decay_decoder, 'name': 'other'},
     ]
 
     # Filter out empty groups
     param_groups = [g for g in param_groups if len(g['params']) > 0]
 
     for g in param_groups:
-        print(f"  Param group '{g['name']}': {sum(p.numel() for p in g['params']):,} params, lr={g['lr']}")
+        print(f"  Param group '{g['name']}': {sum(p.numel() for p in g['params']):,} params, lr={g['lr']}, wd={g['weight_decay']}")
 
-    optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(param_groups)
     return optimizer
 
 
-def get_scheduler(optimizer, args, steps_per_epoch):
-    """Create learning rate scheduler with warmup."""
-    total_steps = args.epochs * steps_per_epoch
-    warmup_steps = args.warmup_epochs * steps_per_epoch
+def get_scheduler(optimizer, args):
+    """
+    Create LR scheduler: Linear Warmup → Cosine Decay with Floor.
 
-    def lr_lambda(current_step):
-        if current_step < warmup_steps:
-            return float(current_step) / float(max(1, warmup_steps))
-        progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
-        return max(0.0, 0.5 * (1.0 + np.cos(np.pi * progress)))
+    Equivalent to CosineAnnealingLR(T_max=epochs-warmup, eta_min=3e-6)
+    with built-in warmup support. Stepped per-EPOCH (not per-step).
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    The floor (eta_min) ensures LR NEVER reaches zero, fixing the
+    premature convergence / dead learning rate issue.
+    """
+    warmup_epochs = args.warmup_epochs
+    total_epochs = args.epochs
+    cosine_epochs = total_epochs - warmup_epochs  # Post-warmup cosine duration
+
+    def make_lr_lambda(initial_lr):
+        """Create per-group lambda with absolute eta_min floor."""
+        eta_min_ratio = args.eta_min / initial_lr
+
+        def lr_lambda(epoch):
+            if epoch < warmup_epochs:
+                # Linear warmup: ramp from ~0 to peak over warmup_epochs
+                return max(eta_min_ratio, float(epoch + 1) / float(warmup_epochs))
+            # Cosine decay with floor (never reaches zero)
+            progress = float(epoch - warmup_epochs) / float(max(1, cosine_epochs))
+            progress = min(progress, 1.0)
+            cosine = 0.5 * (1.0 + np.cos(np.pi * progress))
+            return eta_min_ratio + (1.0 - eta_min_ratio) * cosine
+
+        return lr_lambda
+
+    # Per-group lambdas: each group gets its own floor based on its initial LR
+    lr_lambdas = [make_lr_lambda(group['lr']) for group in optimizer.param_groups]
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambdas)
     return scheduler
 
 
@@ -221,7 +243,6 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, device, e
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
-            scheduler.step()
 
         # Metrics
         with torch.no_grad():
@@ -248,7 +269,6 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, device, e
         scaler.step(optimizer)
         scaler.update()
         optimizer.zero_grad()
-        scheduler.step()
 
     return metric_logger.meters['loss'].global_avg, metric_logger.meters['iou'].global_avg
 
@@ -323,8 +343,7 @@ def main():
 
     # ====== Optimizer & Scheduler ======
     optimizer = get_optimizer(model, args)
-    steps_per_epoch = len(train_loader) // args.grad_accum_steps
-    scheduler = get_scheduler(optimizer, args, steps_per_epoch)
+    scheduler = get_scheduler(optimizer, args)  # Epoch-level, NOT step-level
     scaler = torch.amp.GradScaler('cuda', enabled=args.fp16)
 
     # ====== Resume ======
@@ -338,26 +357,26 @@ def main():
         # Optionally load optimizer state, but update hyperparams to match new args
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         for param_group in optimizer.param_groups:
-            # Override weight decay with the newly passed arg
-            param_group['weight_decay'] = args.weight_decay
-            # Override learning rates with newly passed args based on group name
+            # Override learning rates and weight decay based on group name
             if 'name' in param_group:
                 if param_group['name'] == 'lora_adapters':
                     param_group['lr'] = args.lr_backbone
+                    param_group['weight_decay'] = args.weight_decay
                 elif param_group['name'] in ['enhancements', 'decoder']:
                     param_group['lr'] = args.lr_decoder
+                    param_group['weight_decay'] = args.weight_decay_decoder
                 else:
                     param_group['lr'] = args.lr
+                    param_group['weight_decay'] = args.weight_decay_decoder
 
         start_epoch = ckpt.get('epoch', 0)
         best_iou = ckpt.get('best_iou', 0.0)
         print(f"  Resumed at epoch {start_epoch}, best_iou={best_iou:.4f}")
         
-        # IMPORTANT FIX: Fast-forward the scheduler to the correct step
-        # otherwise the learning rate will spike back to maximum!
+        # Fast-forward scheduler to correct epoch (epoch-level stepping)
         if start_epoch > 0:
             print(f"  Catching up scheduler to epoch {start_epoch}...")
-            for _ in range(start_epoch * steps_per_epoch):
+            for _ in range(start_epoch):
                 scheduler.step()
 
     # ====== Output Directory ======
@@ -372,14 +391,20 @@ def main():
         )
 
     # ====== Training Loop ======
-    print(f"\nStarting training for {args.epochs} epochs...")
+    print(f"\nStarting training for {args.epochs} epochs (early stopping patience={args.patience})...")
+    no_improve_epochs = 0
     for epoch in range(start_epoch, args.epochs):
-        print(f"\n--- Epoch {epoch+1}/{args.epochs} ---")
+        # Print current LR for each group at epoch start
+        lr_info = " | ".join([f"{g.get('name','?')}={g['lr']:.2e}" for g in optimizer.param_groups])
+        print(f"\n--- Epoch {epoch+1}/{args.epochs} [LR: {lr_info}] ---")
 
         # Train
         train_loss, train_iou = train_one_epoch(
             model, train_loader, optimizer, scheduler, scaler, device, epoch + 1, args
         )
+
+        # Step scheduler AFTER epoch (epoch-level, NOT step-level)
+        scheduler.step()
 
         # Validate
         val_iou, val_overall_iou = validate(model, val_loader, device, epoch + 1)
@@ -398,10 +423,11 @@ def main():
                 'lr': optimizer.param_groups[0]['lr'],
             })
 
-        # Save best model
+        # Save best model + Early Stopping tracking
         is_best = (val_iou + val_overall_iou) > best_iou
         if is_best:
             best_iou = val_iou + val_overall_iou
+            no_improve_epochs = 0
             print('Better epoch: {}\n'.format(epoch))
             save_path = os.path.join(args.output_dir, 'best_model.pth')
             torch.save({
@@ -412,6 +438,9 @@ def main():
                 'args': vars(args),
             }, save_path)
             print(f"  ★ New best model saved!")
+        else:
+            no_improve_epochs += 1
+            print(f"  ⚠ No improvement for {no_improve_epochs}/{args.patience} epochs")
 
         # Save latest model at every epoch
         latest_save_path = os.path.join(args.output_dir, 'latest_model.pth')
@@ -435,6 +464,15 @@ def main():
                 'args': vars(args),
             }, save_path)
             print(f"  Checkpoint saved: {save_path}")
+
+        # ====== Early Stopping ======
+        if no_improve_epochs >= args.patience:
+            print(f"\n{'='*60}")
+            print(f"  🛑 Early Stopping at epoch {epoch+1}!")
+            print(f"  No improvement for {args.patience} consecutive epochs.")
+            print(f"  Best combined metric (mIoU + oIoU): {best_iou:.2f}")
+            print(f"{'='*60}")
+            break
 
     print(f"\n{'='*60}")
     print(f"  Training Complete!")

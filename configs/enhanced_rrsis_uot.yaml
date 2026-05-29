@@ -24,14 +24,17 @@ boundary_loss_weight: 0.5     # Boundary-aware loss weight
 focal_gamma: 2.0              # Focal loss focusing parameter
 
 # ====== Training ======
-epochs: 40
+epochs: 35               # 3 warmup + 32 cosine decay (with floor)
 batch_size: 2            # Per GPU (Kaggle 16GB compatible)
 grad_accum_steps: 4      # Effective batch = 2 * 4 = 8
 lr: 5e-5                 # Base learning rate
 lr_backbone: 1e-5        # LoRA adapter learning rate
 lr_decoder: 5e-5         # Decoder/seg head/enhancement learning rate
-weight_decay: 0.01
-warmup_epochs: 5
+weight_decay: 0.01       # Backbone/LoRA weight decay
+weight_decay_decoder: 0.005  # Decoder/heads weight decay (lighter)
+warmup_epochs: 3         # Linear warmup epochs
+eta_min: 3e-6            # LR floor (cosine never drops below this)
+patience: 6              # Early stopping patience
 max_tokens: 32           # SAM3 text tokenizer max length
 
 # ====== Loss ======
@@ -44,10 +47,18 @@ fp16: true               # Mixed precision for Kaggle 16GB
 gradient_checkpointing: true
 seed: 42
 
+# ====== LR Schedule (Cosine with Floor) ======
+# Epoch-level stepping (NOT per-step):
+#   Epoch 1-3:   Linear warmup → peak LR
+#   Epoch 4-35:  Cosine decay → floor at eta_min=3e-6
+#   Backbone:    1e-5 → 3e-6 (30% floor)
+#   Decoder:     5e-5 → 3e-6 (6% floor)
+#   LR NEVER reaches zero — model keeps learning until the end.
+
 # ====== Dataset Specific Notes ======
-# RRSIS-D:   12181 train → ~1523 steps/epoch (bs=8) → 60,920 total steps
-# RRSIS-HR:  2118 train  → ~265 steps/epoch (bs=8)  → 10,600 total steps
-# RefSegRS:  2172 train  → ~272 steps/epoch (bs=8)  → 10,880 total steps
+# RRSIS-D:   12181 train → ~1523 steps/epoch (bs=8) → 53,305 total steps
+# RRSIS-HR:  2118 train  → ~265 steps/epoch (bs=8)  → 9,275 total steps
+# RefSegRS:  2172 train  → ~272 steps/epoch (bs=8)  → 9,520 total steps
 
 # ====== Ablation Guide ======
 # To run baseline (RRSIS_SAM3 equivalent):

@@ -9,7 +9,10 @@
 #   3. Multi-Scale OT Feature Alignment (highly optimized: 550x speedup, 30k VRAM reduction)
 #   4. OHEM + Balanced Focal Dice Loss
 #
-# Target Performance: oIoU = 84.00%+, mIoU = 74.00%+
+# LR Schedule: Linear Warmup (3 epochs) → Cosine Decay with Floor (eta_min=3e-6)
+# Early Stopping: patience=6 (auto-stop if no improvement for 6 epochs)
+#
+# Target Performance: oIoU = 82.00%+, mIoU = 72.00%+
 #
 # Usage:
 #   bash fine.sh [dataset_name] [data_root] [sam3_ckpt]
@@ -34,6 +37,8 @@ echo "📂 Data Root:   ${DATA_ROOT}"
 echo "💾 SAM3 Ckpt:   ${SAM3_CKPT}"
 echo "📁 Output Dir:  ${OUTPUT_DIR}"
 echo "🔧 Optimizations: Dynamic LoRA | Contrastive Loss | Multi-Scale OT | OHEM Loss"
+echo "📈 Schedule:    3-epoch warmup → Cosine decay (eta_min=3e-6, never zero)"
+echo "🛑 Early Stop:  patience=6"
 echo "=============================================================================="
 
 # Ensure output directory exists
@@ -52,7 +57,7 @@ if [ ! -f "${SAM3_CKPT}" ]; then
     fi
 fi
 
-# Run the training script with optimal hyperparameters for performance & speed
+# Run the training script with optimal hyperparameters
 python train.py \
     --dataset ${DATASET} \
     --data_root ${DATA_ROOT} \
@@ -61,14 +66,17 @@ python train.py \
     --image_size 504 \
     --lora_rank 16 \
     --lora_alpha 32.0 \
-    --epochs 40 \
+    --epochs 35 \
     --batch_size 4 \
     --grad_accum_steps 2 \
     --lr 5e-5 \
     --lr_backbone 1e-5 \
     --lr_decoder 5e-5 \
     --weight_decay 0.01 \
-    --warmup_epochs 5 \
+    --weight_decay_decoder 0.005 \
+    --warmup_epochs 3 \
+    --eta_min 3e-6 \
+    --patience 6 \
     --fp16 \
     --gradient_checkpointing \
     --seed 42 \
@@ -80,4 +88,4 @@ python train.py \
     --num_ot_scales 3 \
     --focal_gamma 2.0
 
-echo "🎉 Training epoch run complete!"
+echo "🎉 Training complete!"

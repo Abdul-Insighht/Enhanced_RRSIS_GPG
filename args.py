@@ -72,7 +72,7 @@ def get_parser():
                         help='Focal loss gamma (higher = more focus on hard)')
 
     # ====== Training ======
-    parser.add_argument('--epochs', type=int, default=40,
+    parser.add_argument('--epochs', type=int, default=35,
                         help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=2,
                         help='Training batch size per GPU')
@@ -83,9 +83,15 @@ def get_parser():
     parser.add_argument('--lr_decoder', type=float, default=5e-5,
                         help='Learning rate for decoder/seg head')
     parser.add_argument('--weight_decay', type=float, default=1e-2,
-                        help='Weight decay')
-    parser.add_argument('--warmup_epochs', type=int, default=5,
-                        help='Number of warmup epochs')
+                        help='Weight decay for backbone/LoRA parameters')
+    parser.add_argument('--weight_decay_decoder', type=float, default=5e-3,
+                        help='Weight decay for decoder/heads/enhancement modules (lighter to preserve adaptation)')
+    parser.add_argument('--warmup_epochs', type=int, default=3,
+                        help='Number of linear warmup epochs')
+    parser.add_argument('--eta_min', type=float, default=3e-6,
+                        help='Minimum learning rate floor for cosine scheduler (prevents LR death)')
+    parser.add_argument('--patience', type=int, default=6,
+                        help='Early stopping patience (epochs without improvement before stopping)')
     parser.add_argument('--grad_accum_steps', type=int, default=4,
                         help='Gradient accumulation steps (effective batch = batch_size * accum)')
 
