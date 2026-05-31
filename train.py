@@ -94,7 +94,7 @@ def get_optimizer(model, args):
             continue
         if 'lora' in name.lower() or 'dynamic_lora' in name.lower() or 'hyper_' in name.lower():
             lora_params.append(param)
-        elif any(x in name for x in ['ms_ot_aligner', 'contrastive_loss', 'enhanced_loss', 'ot_aligner']):
+        elif any(x in name for x in ['ms_ot_aligner', 'contrastive_loss', 'enhanced_loss', 'ot_aligner', 'gpg']):
             enhancement_params.append(param)
         elif any(x in name for x in ['transformer', 'segmentation_head', 'geometry_encoder', 'dot_prod']):
             decoder_params.append(param)

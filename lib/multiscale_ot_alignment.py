@@ -65,7 +65,6 @@ class ScaleAwareOTAligner(nn.Module):
         self.last_P = None
         self.scl_loss = 0.0
 
-    @torch.no_grad()
     def sinkhorn(self, cost_matrix):
         """
         Balanced Sinkhorn algorithm for optimal transport.

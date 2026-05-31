@@ -49,7 +49,6 @@ class OTFeatureAligner(nn.Module):
         nn.init.zeros_(self.output_proj.weight)
         nn.init.zeros_(self.output_proj.bias)
 
-    @torch.no_grad()
     def sinkhorn(self, cost_matrix):
         """
         Balanced Sinkhorn algorithm for OT.

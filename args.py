@@ -72,7 +72,7 @@ def get_parser():
                         help='Focal loss gamma (higher = more focus on hard)')
 
     # ====== Training ======
-    parser.add_argument('--epochs', type=int, default=35,
+    parser.add_argument('--epochs', type=int, default=50,
                         help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=2,
                         help='Training batch size per GPU')
@@ -90,7 +90,7 @@ def get_parser():
                         help='Number of linear warmup epochs')
     parser.add_argument('--eta_min', type=float, default=3e-6,
                         help='Minimum learning rate floor for cosine scheduler (prevents LR death)')
-    parser.add_argument('--patience', type=int, default=6,
+    parser.add_argument('--patience', type=int, default=8,
                         help='Early stopping patience (epochs without improvement before stopping)')
     parser.add_argument('--grad_accum_steps', type=int, default=4,
                         help='Gradient accumulation steps (effective batch = batch_size * accum)')

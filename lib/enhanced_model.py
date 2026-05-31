@@ -49,7 +49,7 @@ from .contrastive_loss import ContrastiveLoss
 from .ohem_loss import EnhancedOHEMLoss
 from .ot_feature_alignment import OTFeatureAligner
 from .ot_loss import OTSegmentationLoss
-from .prompt_generator import GroundingAwarePromptGenerator
+from .prompt_generator import DifferentiableGPG
 
 
 class Enhanced_RRSIS_UOT(nn.Module):
@@ -187,9 +187,9 @@ class Enhanced_RRSIS_UOT(nn.Module):
             print("[Enhanced_RRSIS_UOT] Standard Dice+BCE Loss (baseline)")
             self.standard_loss = OTSegmentationLoss()
 
-        # ====== Grounding-Aware Prompt Generator ======
-        print("[Enhanced_RRSIS_UOT] Grounding-Aware Prompt Generation (GPG) enabled")
-        self.gpg = GroundingAwarePromptGenerator(num_points=1)
+        # ====== Differentiable Grounding-Aware Prompt Generator ======
+        print("[Enhanced_RRSIS_UOT] Differentiable GPG enabled (end-to-end gradient flow)")
+        self.gpg = DifferentiableGPG(num_points=5, initial_temperature=1.0, suppression_sigma=0.15)
 
         # ====== Print Summary ======
         get_trainable_params_summary(self)

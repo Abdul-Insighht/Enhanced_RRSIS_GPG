@@ -10,7 +10,7 @@
 | 🟢 **Multi-Scale OT Alignment** | `lib/multiscale_ot_alignment.py` | Scale-aware OT alignment across all FPN levels with gated residual fusion |
 | 🟢 **OHEM + Focal + Boundary Loss** | `lib/ohem_loss.py` | Hard pixel mining + focal weighting + boundary-aware supervision |
 | 🟢 **Contrastive Loss (InfoNCE)** | `lib/contrastive_loss.py` | Auxiliary loss aligning masked visual features with text features |
-| 🟢 **Grounding-Aware Prompt Generator** | `lib/prompt_generator.py` | Extracts point-based geometric prompts from OT transport plans |
+| 🟢 **Differentiable GPG (v3)** | `lib/prompt_generator.py` | Spatial soft-argmax prompt generation with end-to-end gradient flow |
 | 🟢 **Scale-Aware Prompting (SAP)** | `lib/prompt_generator.py` | Dynamically adapts point counts based on object scale to suppress noise |
 
 ## Architecture
@@ -44,9 +44,9 @@ graph TD
     end
 
     subgraph Grounding_Aware_Prompts
-        GPG["GPG Prompt Generator"]:::prompt
+        GPG["Differentiable GPG v3<br/>Spatial Soft-Argmax"]:::prompt
         SAP["Scale-Aware Prompting<br/>tiny → 1pt, large → 5pts"]:::prompt
-        Pts["Sparse Points (B,K,2)"]:::prompt
+        Pts["Soft Points (B,K,2) ✅ gradient"]:::prompt
     end
     
     subgraph SAM3_Core
@@ -101,7 +101,7 @@ Image (B,3,504,504) + Caption (List[str])
   ├─ Step 1.5: Dynamic LoRA → cache pooled text (B, 256) in all LoRA layers
   ├─ Step 1.8: ViT + LoRA → backbone_fpn: List[(B, 256, H_i, W_i)]
   ├─ Step 2:   Multi-Scale OT → aligned FPN + transport plan P (B, HW, seq)
-  ├─ Step 3:   GPG + SAP → sparse points (B, K, 2)
+  ├─ Step 3:   Differentiable GPG + SAP → soft points (B, K, 2) [gradient flows ✅]
   ├─ Step 4:   Encode Prompt → prompt tokens
   ├─ Step 5:   Transformer Encoder → fused hidden states
   ├─ Step 6:   DETR Decoder → N=3 mask hypotheses
@@ -121,7 +121,7 @@ Image (B,3,504,504) + Caption (List[str])
 | Score Supervision | Uniform 1/N targets | **IoU-based query matching** (best query → 1.0) |
 | Contrastive Features | Pooled encoder output (no spatial info) | **FPN features** with real spatial structure |
 | Vision-Language Bond | Fusion encoder only | **Early** (LoRA) + **Mid** (OT) + **Late** (Contrastive) alignment |
-| Point Grounding | None | **GPG with Scale-Aware Prompting (SAP)** |
+| Point Grounding | None | **Differentiable GPG with Spatial Soft-Argmax** |
 
 ## Bug Fixes Applied (v2)
 
@@ -154,18 +154,21 @@ env MPLBACKEND="agg" WANDB_MODE=disabled python train.py \
       --dataset rrsis_d \
       --data_root /kaggle/input/datasets/saadali22/datad-rms/datad \
       --sam3_ckpt /kaggle/input/datasets/abdulahad0011/sam3-weight/sam3.pt \
-      --output_dir ./output/rrsis_d_enhanced_v2 \
+      --output_dir ./output/rrsis_d_enhanced_v3 \
       --image_size 504 \
       --lora_rank 16 \
       --lora_alpha 32.0 \
-      --epochs 40 \
+      --epochs 50 \
       --batch_size 2 \
       --grad_accum_steps 8 \
       --lr 5e-5 \
       --lr_backbone 1e-5 \
       --lr_decoder 5e-5 \
       --weight_decay 0.01 \
-      --warmup_epochs 5 \
+      --weight_decay_decoder 0.005 \
+      --warmup_epochs 3 \
+      --eta_min 3e-6 \
+      --patience 8 \
       --contrastive_weight 0.1 \
       --ohem_hard_ratio 0.3 \
       --ot_reg 0.1 \
@@ -181,7 +184,7 @@ env MPLBACKEND="agg" WANDB_MODE=disabled python train.py \
       --use_contrastive_loss \
       --use_multiscale_ot \
       --use_ohem_loss \
-      2>&1 | tee -a ./output_rrsis_d_v2.log
+      2>&1 | tee -a ./output_rrsis_d_v3.log
 ```
 
 ### ⚡ Quick Training (Faster, Slightly Lower Performance)
@@ -257,7 +260,7 @@ python train.py --dataset rrsis_d --data_root ./data/ --sam3_ckpt ./sam3.pt
 | `--lr_backbone` | 1e-5 | **5e-6 – 2e-5** | LoRA params in backbone; lower than base LR |
 | `--lr_decoder` | 5e-5 | **2e-5 – 1e-4** | Decoder + seg head; can be equal to or higher than base |
 | `--weight_decay` | 0.01 | **0.005 – 0.02** | AdamW weight decay; standard 0.01 |
-| `--warmup_epochs` | 5 | **3 – 8** | LR warmup; 5 epochs gives stable initial training |
+| `--warmup_epochs` | 3 | **2 – 5** | LR warmup; 3 epochs for fine-tuning pretrained models |
 
 #### Memory & Batch
 
@@ -353,7 +356,7 @@ Enhanced_RRSIS_UOT/
 │   ├── contrastive_loss.py         # ★ InfoNCE Contrastive Loss
 │   ├── multiscale_ot_alignment.py  # ★ Multi-Scale OT Alignment (FP32-safe Sinkhorn)
 │   ├── ohem_loss.py                # ★ OHEM + Focal + Boundary Loss (IoU-based score)
-│   ├── prompt_generator.py         # ★ GPG (Grounding-Aware Prompt Generator) + SAP
+│   ├── prompt_generator.py         # ★ Differentiable GPG (v3) + SAP (Spatial Soft-Argmax)
 │   ├── rrsis_sam3_model.py         # Base model (from RRSIS_SAM3)
 │   ├── rs_adapters.py              # Static LoRA adapters (fallback)
 │   ├── ot_feature_alignment.py     # Single-scale OT (fallback, FP32-safe)
@@ -400,13 +403,13 @@ Enhanced_RRSIS_UOT/
 | | `--num_ot_scales` | `3` | int | FPN scales for OT |
 | | `--boundary_loss_weight` | `0.5` | float | Boundary loss weight |
 | | `--focal_gamma` | `2.0` | float | Focal loss gamma |
-| **Training** | `--epochs` | `40` | int | Training epochs |
+| **Training** | `--epochs` | `50` | int | Training epochs |
 | | `--batch_size` | `2` | int | Batch size per GPU |
 | | `--lr` | `5e-5` | float | Base learning rate |
 | | `--lr_backbone` | `1e-5` | float | Backbone (LoRA) LR |
 | | `--lr_decoder` | `5e-5` | float | Decoder/seg head LR |
 | | `--weight_decay` | `1e-2` | float | AdamW weight decay |
-| | `--warmup_epochs` | `5` | int | LR warmup epochs |
+| | `--warmup_epochs` | `3` | int | LR warmup epochs |
 | | `--grad_accum_steps` | `4` | int | Gradient accumulation |
 | **Optimization** | `--fp16` | `True` | flag | Mixed precision (FP16) |
 | | `--gradient_checkpointing` | `True` | flag | Gradient checkpointing |

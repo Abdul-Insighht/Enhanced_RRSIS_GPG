@@ -16,3 +16,6 @@ final_outputs/
 # Kaggle / Environment
 environment.yml
 venv/
+
+# Reference papers
+2026_RRSIS/
