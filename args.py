@@ -64,7 +64,7 @@ def get_parser():
                         help='Weight for contrastive loss (InfoNCE)')
     parser.add_argument('--ohem_hard_ratio', type=float, default=0.3,
                         help='OHEM: fraction of hardest pixels to keep')
-    parser.add_argument('--boundary_weight', type=float, default=0.3,
+    parser.add_argument('--text_boundary_weight', type=float, default=0.3,
                         help='Weight for text-guided boundary loss')
     parser.add_argument('--selection_temp', type=float, default=0.1,
                         help='Temperature for soft query mask selection during training')

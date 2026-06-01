@@ -300,7 +300,7 @@ def main():
     print(f"  Contrastive Loss: {args.use_contrastive_loss} (weight={args.contrastive_weight})")
     print(f"  Multi-Scale OT: {args.use_multiscale_ot} ({args.num_ot_scales} scales)")
     print(f"  OHEM Loss: {args.use_ohem_loss} (hard_ratio={args.ohem_hard_ratio})")
-    print(f"  Text Boundary Loss: {args.use_boundary_loss} (weight={args.boundary_weight})")
+    print(f"  Text Boundary Loss: {args.use_boundary_loss} (weight={args.text_boundary_weight})")
     print(f"  Selection Temperature: {args.selection_temp}")
     print(f"{'='*60}\n")
 
@@ -326,7 +326,7 @@ def main():
         ot_reg=args.ot_reg,
         ot_num_iter=args.ot_num_iter,
         num_ot_scales=args.num_ot_scales,
-        boundary_weight=args.boundary_weight,
+        boundary_weight=args.text_boundary_weight,
         selection_temp=args.selection_temp,
     )
     model = model.to(device)

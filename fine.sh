@@ -84,7 +84,7 @@ python train.py \
     --num_workers 4 \
     --contrastive_weight 0.0 \
     --use_boundary_loss \
-    --boundary_weight 0.3 \
+    --text_boundary_weight 0.3 \
     --selection_temp 0.1 \
     --ohem_hard_ratio 0.3 \
     --ot_reg 0.1 \
