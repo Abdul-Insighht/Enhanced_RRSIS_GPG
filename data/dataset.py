@@ -111,6 +111,15 @@ class RRSISDDataset(data.Dataset):
         mask = TF.resize(mask, [self.image_size, self.image_size],
                          interpolation=TF.InterpolationMode.NEAREST)
 
+        # Joint random flips for training augmentation
+        if self.split == 'train':
+            if random.random() > 0.5:
+                img = TF.hflip(img)
+                mask = TF.hflip(mask)
+            if random.random() > 0.5:
+                img = TF.vflip(img)
+                mask = TF.vflip(mask)
+
         # Select caption
         if self.eval_mode:
             caption = self.captions[index]  # Return all captions for eval
@@ -203,6 +212,15 @@ class RRSISHRDataset(data.Dataset):
         mask = torch.from_numpy(annot).unsqueeze(0).float()
         mask = TF.resize(mask, [self.image_size, self.image_size],
                          interpolation=TF.InterpolationMode.NEAREST)
+
+        # Joint random flips for training augmentation
+        if self.split == 'train':
+            if random.random() > 0.5:
+                img = TF.hflip(img)
+                mask = TF.hflip(mask)
+            if random.random() > 0.5:
+                img = TF.vflip(img)
+                mask = TF.vflip(mask)
 
         # Select caption
         if self.eval_mode:
@@ -298,6 +316,15 @@ class RefSegRSDataset(data.Dataset):
         mask = torch.from_numpy(annot).unsqueeze(0).float()
         mask = TF.resize(mask, [self.image_size, self.image_size],
                          interpolation=TF.InterpolationMode.NEAREST)
+
+        # Joint random flips for training augmentation
+        if self.split == 'train':
+            if random.random() > 0.5:
+                img = TF.hflip(img)
+                mask = TF.hflip(mask)
+            if random.random() > 0.5:
+                img = TF.vflip(img)
+                mask = TF.vflip(mask)
 
         # Select caption
         if self.eval_mode:

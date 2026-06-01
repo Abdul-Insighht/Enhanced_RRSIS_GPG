@@ -50,6 +50,7 @@ from .ohem_loss import EnhancedOHEMLoss
 from .ot_feature_alignment import OTFeatureAligner
 from .ot_loss import OTSegmentationLoss
 from .prompt_generator import DifferentiableGPG
+from .text_boundary_loss import TextGuidedBoundaryLoss
 
 
 class Enhanced_RRSIS_UOT(nn.Module):
@@ -105,6 +106,9 @@ class Enhanced_RRSIS_UOT(nn.Module):
         ot_reg: float = 0.1,
         ot_num_iter: int = 10,
         num_ot_scales: int = 3,
+        selection_temp: float = 0.1,
+        use_boundary_loss: bool = True,
+        boundary_weight: float = 0.3,
     ):
         super().__init__()
         self.image_size = image_size
@@ -112,8 +116,11 @@ class Enhanced_RRSIS_UOT(nn.Module):
         self.use_contrastive_loss = use_contrastive_loss
         self.use_multiscale_ot = use_multiscale_ot
         self.use_ohem_loss = use_ohem_loss
+        self.use_boundary_loss = use_boundary_loss
         self.contrastive_weight = contrastive_weight
         self.scl_weight = scl_weight
+        self.boundary_weight = boundary_weight
+        self.selection_temp = selection_temp
 
         # ====== Build SAM3 Image Model ======
         print("[Enhanced_RRSIS_UOT] Building SAM3 image model...")
@@ -186,6 +193,11 @@ class Enhanced_RRSIS_UOT(nn.Module):
         else:
             print("[Enhanced_RRSIS_UOT] Standard Dice+BCE Loss (baseline)")
             self.standard_loss = OTSegmentationLoss()
+
+        # ====== Text-Guided Boundary Loss ======
+        if use_boundary_loss:
+            print("[Enhanced_RRSIS_UOT] Text-Guided Boundary Loss enabled")
+            self.boundary_loss = TextGuidedBoundaryLoss(gamma=3.0)
 
         # ====== Differentiable Grounding-Aware Prompt Generator ======
         print("[Enhanced_RRSIS_UOT] Differentiable GPG enabled (end-to-end gradient flow)")
@@ -449,10 +461,31 @@ class Enhanced_RRSIS_UOT(nn.Module):
                         print(f"[WARNING] Contrastive loss skipped: {e}")
                     contrastive = torch.tensor(0.0, device=device)
 
-            result['loss'] = seg_loss + self.contrastive_weight * contrastive + self.scl_weight * scl_loss
+            # Text-Guided Boundary Loss
+            boundary_loss = torch.tensor(0.0, device=device)
+            if self.use_boundary_loss and hasattr(self, 'boundary_loss'):
+                try:
+                    fpn_feats = backbone_out.get('backbone_fpn', None)
+                    if fpn_feats is not None and text_feats is not None and len(fpn_feats) > 0:
+                        # Use highest-resolution FPN level
+                        vis_feat = fpn_feats[0]
+                        if hasattr(vis_feat, 'tensors'):
+                            vis_feat = vis_feat.tensors
+                        if vis_feat.dim() == 4:
+                            boundary_loss = self.boundary_loss(
+                                result['pred_masks'], masks_gt,
+                                text_feats, vis_feat
+                            )
+                except Exception as e:
+                    if self.training:
+                        print(f"[WARNING] Text-Guided Boundary loss skipped: {e}")
+                    boundary_loss = torch.tensor(0.0, device=device)
+
+            result['loss'] = seg_loss + self.contrastive_weight * contrastive + self.scl_weight * scl_loss + self.boundary_weight * boundary_loss
             result['seg_loss'] = seg_loss.detach()
             result['scl_loss'] = scl_loss.detach() if isinstance(scl_loss, torch.Tensor) else scl_loss
             result['contrastive_loss'] = contrastive.detach() if isinstance(contrastive, torch.Tensor) else contrastive
+            result['boundary_loss'] = boundary_loss.detach() if isinstance(boundary_loss, torch.Tensor) else boundary_loss
 
         return result
 
@@ -474,11 +507,18 @@ class Enhanced_RRSIS_UOT(nn.Module):
             result['all_query_masks'] = pred_masks  # (B, N, H_mask, W_mask)
 
             if pred_logits is not None:
-                scores = pred_logits.squeeze(-1)
-                best_idx = scores.argmax(dim=-1)
-                batch_idx = torch.arange(batch_size, device=pred_masks.device)
-                best_masks = pred_masks[batch_idx, best_idx]
-                best_masks = best_masks.unsqueeze(1)
+                scores = pred_logits.squeeze(-1)  # (B, N)
+                
+                if self.training:
+                    # Soft selection: Differentiable mixture of all query masks weighted by softmax scores
+                    weights = F.softmax(scores / self.selection_temp, dim=-1)  # (B, N)
+                    best_masks = (pred_masks * weights.unsqueeze(-1).unsqueeze(-1)).sum(dim=1, keepdim=True)  # (B, 1, H_mask, W_mask)
+                else:
+                    # Hard selection during evaluation/inference (crisp and exact)
+                    best_idx = scores.argmax(dim=-1)
+                    batch_idx = torch.arange(batch_size, device=pred_masks.device)
+                    best_masks = pred_masks[batch_idx, best_idx]
+                    best_masks = best_masks.unsqueeze(1)
             else:
                 best_masks = pred_masks[:, 0:1]
 

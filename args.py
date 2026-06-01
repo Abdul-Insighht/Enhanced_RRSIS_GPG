@@ -54,12 +54,20 @@ def get_parser():
                         help='Enable OHEM + Focal + Boundary loss')
     parser.add_argument('--no_ohem_loss', action='store_true', default=False,
                         help='Disable OHEM loss (use standard Dice+BCE)')
+    parser.add_argument('--use_boundary_loss', action='store_true', default=True,
+                        help='Enable text-guided boundary loss')
+    parser.add_argument('--no_boundary_loss', action='store_true', default=False,
+                        help='Disable text-guided boundary loss')
 
     # ====== Enhancement Parameters (NEW) ======
     parser.add_argument('--contrastive_weight', type=float, default=0.1,
                         help='Weight for contrastive loss (InfoNCE)')
     parser.add_argument('--ohem_hard_ratio', type=float, default=0.3,
                         help='OHEM: fraction of hardest pixels to keep')
+    parser.add_argument('--boundary_weight', type=float, default=0.3,
+                        help='Weight for text-guided boundary loss')
+    parser.add_argument('--selection_temp', type=float, default=0.1,
+                        help='Temperature for soft query mask selection during training')
     parser.add_argument('--ot_reg', type=float, default=0.1,
                         help='Sinkhorn OT entropy regularization')
     parser.add_argument('--ot_num_iter', type=int, default=10,
@@ -143,5 +151,7 @@ def get_args():
         args.use_multiscale_ot = False
     if args.no_ohem_loss:
         args.use_ohem_loss = False
+    if args.no_boundary_loss:
+        args.use_boundary_loss = False
 
     return args

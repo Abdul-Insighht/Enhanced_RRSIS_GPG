@@ -239,9 +239,12 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, device, e
         # Gradient accumulation
         if (batch_idx + 1) % args.grad_accum_steps == 0:
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if torch.isfinite(grad_norm):
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                print(f"[WARNING] NaN/Inf gradient norm detected at batch {batch_idx}, skipping optimizer step to prevent weight pollution")
             optimizer.zero_grad()
 
         # Metrics
@@ -259,15 +262,20 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, device, e
             log_dict['seg_loss'] = outputs['seg_loss'].item() if isinstance(outputs['seg_loss'], torch.Tensor) else outputs['seg_loss']
         if 'contrastive_loss' in outputs:
             log_dict['cl_loss'] = outputs['contrastive_loss'].item() if isinstance(outputs['contrastive_loss'], torch.Tensor) else outputs['contrastive_loss']
+        if 'boundary_loss' in outputs:
+            log_dict['bd_loss'] = outputs['boundary_loss'].item() if isinstance(outputs['boundary_loss'], torch.Tensor) else outputs['boundary_loss']
 
         metric_logger.update(**log_dict)
 
     # Handle remaining gradients at the end of epoch
     if len(train_loader) % args.grad_accum_steps != 0:
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        scaler.step(optimizer)
-        scaler.update()
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        if torch.isfinite(grad_norm):
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            print("[WARNING] NaN/Inf gradient norm detected at the end of epoch, skipping optimizer step to prevent weight pollution")
         optimizer.zero_grad()
 
     return metric_logger.meters['loss'].global_avg, metric_logger.meters['iou'].global_avg
@@ -292,6 +300,8 @@ def main():
     print(f"  Contrastive Loss: {args.use_contrastive_loss} (weight={args.contrastive_weight})")
     print(f"  Multi-Scale OT: {args.use_multiscale_ot} ({args.num_ot_scales} scales)")
     print(f"  OHEM Loss: {args.use_ohem_loss} (hard_ratio={args.ohem_hard_ratio})")
+    print(f"  Text Boundary Loss: {args.use_boundary_loss} (weight={args.boundary_weight})")
+    print(f"  Selection Temperature: {args.selection_temp}")
     print(f"{'='*60}\n")
 
     # ====== Build Enhanced Model ======
@@ -309,12 +319,15 @@ def main():
         use_contrastive_loss=args.use_contrastive_loss,
         use_multiscale_ot=args.use_multiscale_ot,
         use_ohem_loss=args.use_ohem_loss,
+        use_boundary_loss=args.use_boundary_loss,
         # Enhancement params
         contrastive_weight=args.contrastive_weight,
         ohem_hard_ratio=args.ohem_hard_ratio,
         ot_reg=args.ot_reg,
         ot_num_iter=args.ot_num_iter,
         num_ot_scales=args.num_ot_scales,
+        boundary_weight=args.boundary_weight,
+        selection_temp=args.selection_temp,
     )
     model = model.to(device)
 

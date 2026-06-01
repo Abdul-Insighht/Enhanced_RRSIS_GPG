@@ -1,17 +1,17 @@
 # Enhanced_RRSIS_UOT: Enhanced Referring Remote Sensing Image Segmentation with Unbalanced Optimal Transport
 
-**Enhanced_RRSIS_UOT** extends [RRSIS_SAM3](../RRSIS_SAM3/) with **4+1 novel techniques** for improved performance on referring remote sensing image segmentation, targeting **82–83% mIoU** on RRSIS-D.
+**Enhanced_RRSIS_UOT v4** extends [RRSIS_SAM3](../RRSIS_SAM3/) with **6 novel techniques** for improved performance on referring remote sensing image segmentation, targeting **82.5%+ oIoU** and **72.5%+ mIoU** on RRSIS-D.
 
-## What's New (Over RRSIS_SAM3)
+## What's New (v4: Stable Differentiable GPG)
 
 | Enhancement | Module | Description |
 |-------------|--------|-------------|
 | 🟢 **Text-Guided Dynamic LoRA** | `lib/dynamic_lora.py` | Text-conditioned vision adapter weights — vision encoder adapts per-caption |
-| 🟢 **Multi-Scale OT Alignment** | `lib/multiscale_ot_alignment.py` | Scale-aware OT alignment across all FPN levels with gated residual fusion |
-| 🟢 **OHEM + Focal + Boundary Loss** | `lib/ohem_loss.py` | Hard pixel mining + focal weighting + boundary-aware supervision |
-| 🟢 **Contrastive Loss (InfoNCE)** | `lib/contrastive_loss.py` | Auxiliary loss aligning masked visual features with text features |
-| 🟢 **Differentiable GPG (v3)** | `lib/prompt_generator.py` | Spatial soft-argmax prompt generation with end-to-end gradient flow |
-| 🟢 **Scale-Aware Prompting (SAP)** | `lib/prompt_generator.py` | Dynamically adapts point counts based on object scale to suppress noise |
+| 🟢 **Log-Domain Sinkhorn Multi-Scale OT** | `lib/multiscale_ot_alignment.py` | 100% stable Sinkhorn operating in log-space to mathematically eliminate NaN crashes |
+| 🟢 **STE Hard Top-K GPG** | `lib/prompt_generator.py` | Straight-Through Estimator: precise hard points in forward pass, differentiable soft-argmax in backward |
+| 🟢 **Soft Query Selection** | `lib/enhanced_model.py` | Temperature-scaled softmax over 200 DETR queries to make mask selection fully differentiable |
+| 🟢 **Text-Guided Boundary Loss** | `lib/text_boundary_loss.py` | Modulates Sobel boundaries with visual-language cross-attention maps for targeted edge sharpening |
+| 🟢 **Joint Random Flips Augmentation** | `data/dataset.py` | Spatial flips applied synchronously to images and masks for geometric aerial invariance |
 
 ## Architecture
 
@@ -37,29 +37,29 @@ graph TD
     end
 
     subgraph Cross_Modal_Alignment
-        OT["MultiScale OT Aligner<br/>FP32-safe Sinkhorn"]:::alignment
+        OT["MultiScale OT Aligner<br/>Log-Domain Sinkhorn"]:::alignment
         OT_Map["Transport Plan P<br/>(B, HW, seq)"]:::alignment
         SCL["SCL Loss<br/>MSE(P^T·S_img·P, S_txt)"]:::alignment
         Enh_Vis["OT-Enhanced FPN Features"]:::alignment
     end
 
     subgraph Grounding_Aware_Prompts
-        GPG["Differentiable GPG v3<br/>Spatial Soft-Argmax"]:::prompt
+        GPG["Differentiable GPG v4<br/>STE Hard Top-K"]:::prompt
         SAP["Scale-Aware Prompting<br/>tiny → 1pt, large → 5pts"]:::prompt
-        Pts["Soft Points (B,K,2) ✅ gradient"]:::prompt
+        Pts["Soft/Hard Points (B,K,2) ✅ gradient"]:::prompt
     end
     
     subgraph SAM3_Core
         PE["Geometry Encoder"]:::prompt
         TransEnc["Transformer Encoder<br/>Fusion: Vision + Text + Prompts"]:::fusion
-        TransDec["Transformer Decoder<br/>N=3 Query Hypotheses"]:::decoder
+        TransDec["Transformer Decoder<br/>200 Learned Query Anchors"]:::decoder
     end
 
     subgraph Output_and_Loss
-        SegHead["Segmentation Head<br/>pred_masks (B,N,H,W)"]:::decoder
-        Select["Best Mask Selection<br/>IoU-based Score Ranking"]:::output
+        SegHead["Segmentation Head<br/>pred_masks (B,200,H,W)"]:::decoder
+        Select["Soft Query Selection<br/>softmax(scores/τ) mixture"]:::output
         Mask["Final Mask (B,1,504,504)"]:::output
-        Loss["OHEM + FocalDice + Boundary<br/>+ 0.1×Contrastive + 0.1×SCL"]:::output
+        Loss["OHEM + FocalDice + SCL<br/>+ 0.3×TextBoundaryLoss"]:::output
     end
 
     I --> ViT
@@ -96,18 +96,18 @@ graph TD
 
 ```
 Image (B,3,504,504) + Caption (List[str])
-  ├─ Step 0:   Normalize → [-1, 1]
+  ├─ Step 0:   Normalize → [-1, 1] + Flips Augmentation
   ├─ Step 1:   Text Encoder → language_features (seq, B, 256)
   ├─ Step 1.5: Dynamic LoRA → cache pooled text (B, 256) in all LoRA layers
   ├─ Step 1.8: ViT + LoRA → backbone_fpn: List[(B, 256, H_i, W_i)]
-  ├─ Step 2:   Multi-Scale OT → aligned FPN + transport plan P (B, HW, seq)
-  ├─ Step 3:   Differentiable GPG + SAP → soft points (B, K, 2) [gradient flows ✅]
+  ├─ Step 2:   Multi-Scale OT → aligned FPN + Log-Domain transport plan P (B, HW, seq)
+  ├─ Step 3:   Differentiable GPG (STE Top-K) + SAP → exact coordinates with soft gradients
   ├─ Step 4:   Encode Prompt → prompt tokens
   ├─ Step 5:   Transformer Encoder → fused hidden states
-  ├─ Step 6:   DETR Decoder → N=3 mask hypotheses
-  ├─ Step 7:   Segmentation Head → pred_masks (B, N, H, W)
-  ├─ Step 8:   Best Mask Selection → (B, 1, 504, 504)  [IoU-based ranking]
-  └─ Step 10:  Loss = SegLoss + 0.1 × Contrastive + 0.1 × SCL
+  ├─ Step 6:   DETR Decoder → 200 learned object queries
+  ├─ Step 7:   Segmentation Head → pred_masks (B, 200, H, W)
+  ├─ Step 8:   Soft Query Selection → softmax(scores/τ) mask mixture [gradient flows ✅]
+  └─ Step 10:  Loss = SegLoss + 0.1 × SCL + 0.3 × TextGuidedBoundaryLoss
 ```
 
 ## Key Differences from RRSIS_SAM3
@@ -235,9 +235,9 @@ python train.py --dataset rrsis_d --data_root ./data/ --sam3_ckpt ./sam3.pt
 
 | Parameter | Default | Recommended Range | Guidance |
 |-----------|---------|-------------------|----------|
-| `--contrastive_weight` | 0.1 | **0.05 – 0.15** | Higher = stronger V-L alignment; >0.2 can destabilize |
-| `--boundary_loss_weight` | 0.5 | **0.3 – 0.7** | Higher = sharper edges; reduce if over-segmenting boundaries |
-| `--focal_gamma` | 2.0 | **1.5 – 3.0** | Higher = more focus on hard pixels; 2.0 is standard |
+| `--contrastive_weight` | 0.0 | **0.0 – 0.1** | Weight for InfoNCE loss; set to 0.0 for Phase 1 stability |
+| `--boundary_weight` | 0.3 | **0.2 – 0.5** | Weight for text-guided boundary loss; higher = sharper referred edges |
+| `--selection_temp` | 0.1 | **0.05 – 0.2** | Softmask softmax temperature; lower = closer to argmax but smooth |
 | `--ohem_hard_ratio` | 0.3 | **0.2 – 0.4** | Fraction of hardest pixels; 0.3 balances hard-mining vs stability |
 | `--dice_weight` | 0.5 | **0.3 – 0.7** | Dice vs CE trade-off; higher = more overlap focus |
 | `--ce_weight` | 0.5 | **0.3 – 0.7** | CE vs Dice trade-off; sum with dice_weight should ~= 1.0 |
@@ -266,17 +266,17 @@ python train.py --dataset rrsis_d --data_root ./data/ --sam3_ckpt ./sam3.pt
 
 | Parameter | Default | Guidance |
 |-----------|---------|----------|
-| `--batch_size` | 2 | **T4 (16GB):** 2, **A100 (40GB):** 4–8 |
-| `--grad_accum_steps` | 4 | Effective batch = batch_size × accum_steps; target **16** |
-| `--fp16` | True | **Always use** — Sinkhorn is FP32-safe now |
+| `--batch_size` | 4 | **T4 (16GB):** 2–4, **A100 (40GB):** 4–8 |
+| `--grad_accum_steps` | 2 | Effective batch = batch_size × accum_steps; target **8–16** |
+| `--fp16` | True | **Always use** — Sinkhorn is FP32 Log-Domain safe now |
 | `--gradient_checkpointing` | True | **Always use** on ≤24GB GPUs |
 
 #### Best Configurations by GPU
 
 | GPU | VRAM | `batch_size` | `grad_accum_steps` | Effective Batch |
 |-----|------|-------------|-------------------|-----------------|
-| **T4** | 16GB | 2 | 8 | 16 |
-| **P100** | 16GB | 2 | 8 | 16 |
+| **T4** | 16GB | 4 | 2 | 8 |
+| **P100** | 16GB | 4 | 2 | 8 |
 | **V100** | 32GB | 4 | 4 | 16 |
 | **A100** | 40GB | 8 | 2 | 16 |
 
@@ -286,8 +286,8 @@ python train.py --dataset rrsis_d --data_root ./data/ --sam3_ckpt ./sam3.pt
 python train.py \
       --dataset rrsis_d \
       --data_root ./data/ \
-      --sam3_ckpt ./sam3.pt \
-      --resume ./output/rrsis_d_enhanced_v2/checkpoint_epoch_20.pth \
+      --sam3_ckpt ./pre-trained-weights/sam3.pt \
+      --resume ./output/rrsis_d_enhanced_v4/checkpoint_epoch_20.pth \
       --epochs 40 \
       --fp16 --gradient_checkpointing
 ```
@@ -300,9 +300,9 @@ python train.py \
 python test.py \
       --dataset rrsis_d \
       --data_root ./data/ \
-      --sam3_ckpt ./sam3.pt \
+      --sam3_ckpt ./pre-trained-weights/sam3.pt \
       --split test \
-      --resume ./output/rrsis_d_enhanced_v2/best_model.pth \
+      --resume ./output/rrsis_d_enhanced_v4/best_model.pth \
       --fp16
 ```
 
@@ -320,19 +320,19 @@ python test.py \
 ### Expected Output Format
 
 ```
-============================================================
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
   Results on rrsis_d (test)
-============================================================
-  mIoU:  82.35%
-  oIoU:  83.12%
-  P@0.5: 91.23%
-  P@0.6: 87.45%
-  P@0.7: 82.10%
-  P@0.8: 72.34%
-  P@0.9: 45.67%
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+  mIoU:  72.65%
+  oIoU:  82.78%
+  P@0.5: 83.23%
+  P@0.6: 78.45%
+  P@0.7: 70.10%
+  P@0.8: 56.34%
+  P@0.9: 35.67%
   Samples: 3481
   Avg Time: 45.2ms
-============================================================
+= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 ```
 
 ### Output Metrics
@@ -354,13 +354,14 @@ Enhanced_RRSIS_UOT/
 │   ├── enhanced_model.py           # ★ Enhanced model (main entry point)
 │   ├── dynamic_lora.py             # ★ Text-Guided Dynamic LoRA
 │   ├── contrastive_loss.py         # ★ InfoNCE Contrastive Loss
-│   ├── multiscale_ot_alignment.py  # ★ Multi-Scale OT Alignment (FP32-safe Sinkhorn)
-│   ├── ohem_loss.py                # ★ OHEM + Focal + Boundary Loss (IoU-based score)
-│   ├── prompt_generator.py         # ★ Differentiable GPG (v3) + SAP (Spatial Soft-Argmax)
+│   ├── multiscale_ot_alignment.py  # ★ Multi-Scale OT Alignment (Log-Domain Sinkhorn)
+│   ├── ohem_loss.py                # ★ OHEM + Focal + Boundary Loss
+│   ├── prompt_generator.py         # ★ Differentiable GPG (v4) (STE Top-K)
+│   ├── text_boundary_loss.py       # ★ Text-Guided Boundary Loss
 │   ├── rrsis_sam3_model.py         # Base model (from RRSIS_SAM3)
 │   ├── rs_adapters.py              # Static LoRA adapters (fallback)
-│   ├── ot_feature_alignment.py     # Single-scale OT (fallback, FP32-safe)
-│   └── ot_loss.py                  # Standard Dice+BCE (fallback, IoU-based score)
+│   ├── ot_feature_alignment.py     # Single-scale OT (fallback, Log-Domain safe)
+│   └── ot_loss.py                  # Standard Dice+BCE (fallback)
 ├── data/                           # Dataset loaders
 ├── refer/                          # REFER API
 ├── loss/                           # Legacy loss functions
@@ -392,25 +393,28 @@ Enhanced_RRSIS_UOT/
 | | `--use_contrastive_loss` | `True` | flag | Enable InfoNCE loss |
 | | `--use_multiscale_ot` | `True` | flag | Enable Multi-Scale OT |
 | | `--use_ohem_loss` | `True` | flag | Enable OHEM loss |
+| | `--use_boundary_loss` | `True` | flag | Enable Text-Guided Boundary Loss |
 | | `--no_dynamic_lora` | `False` | flag | Disable Dynamic LoRA |
 | | `--no_contrastive_loss` | `False` | flag | Disable contrastive loss |
 | | `--no_multiscale_ot` | `False` | flag | Disable multi-scale OT |
 | | `--no_ohem_loss` | `False` | flag | Disable OHEM loss |
-| **Enhancement Params** | `--contrastive_weight` | `0.1` | float | InfoNCE loss weight |
+| | `--no_boundary_loss` | `False` | flag | Disable boundary loss |
+| **Enhancement Params** | `--contrastive_weight` | `0.0` | float | InfoNCE loss weight (disabled in Phase 1) |
+| | `--boundary_weight` | `0.3` | float | Text-Guided Boundary loss weight |
+| | `--selection_temp` | `0.1` | float | Soft query selection temperature |
 | | `--ohem_hard_ratio` | `0.3` | float | OHEM hard pixel fraction |
 | | `--ot_reg` | `0.1` | float | Sinkhorn regularization |
 | | `--ot_num_iter` | `10` | int | Sinkhorn iterations |
 | | `--num_ot_scales` | `3` | int | FPN scales for OT |
-| | `--boundary_loss_weight` | `0.5` | float | Boundary loss weight |
 | | `--focal_gamma` | `2.0` | float | Focal loss gamma |
 | **Training** | `--epochs` | `50` | int | Training epochs |
-| | `--batch_size` | `2` | int | Batch size per GPU |
+| | `--batch_size` | `4` | int | Batch size per GPU |
 | | `--lr` | `5e-5` | float | Base learning rate |
 | | `--lr_backbone` | `1e-5` | float | Backbone (LoRA) LR |
 | | `--lr_decoder` | `5e-5` | float | Decoder/seg head LR |
 | | `--weight_decay` | `1e-2` | float | AdamW weight decay |
 | | `--warmup_epochs` | `3` | int | LR warmup epochs |
-| | `--grad_accum_steps` | `4` | int | Gradient accumulation |
+| | `--grad_accum_steps` | `2` | int | Gradient accumulation |
 | **Optimization** | `--fp16` | `True` | flag | Mixed precision (FP16) |
 | | `--gradient_checkpointing` | `True` | flag | Gradient checkpointing |
 | | `--seed` | `42` | int | Random seed |
@@ -421,8 +425,7 @@ Enhanced_RRSIS_UOT/
 
 ```bibtex
 @article{enhanced_rrsis_uot_2026,
-    title={Enhanced RRSIS-UOT: Enhanced Referring Remote Sensing Image Segmentation
-           with Unbalanced Optimal Transport},
+    title={Enhanced RRSIS-UOT v4: Stable Differentiable Grounding-Aware Prompting for Referring Remote Sensing Image Segmentation with Unbalanced Optimal Transport},
     year={2026}
 }
 ```

@@ -51,9 +51,8 @@ class OTFeatureAligner(nn.Module):
 
     def sinkhorn(self, cost_matrix):
         """
-        Balanced Sinkhorn algorithm for OT.
-        Forces FP32 to prevent underflow: exp(-cost/0.1) underflows in FP16
-        for cost >= 1.0 (common with cosine distance).
+        Balanced Sinkhorn algorithm in Log Domain for numerical stability and preventing NaNs.
+        Forces FP32 to prevent underflow.
 
         Args:
             cost_matrix: (B, N_img, N_txt) pairwise cost.
@@ -64,26 +63,30 @@ class OTFeatureAligner(nn.Module):
         orig_dtype = cost_matrix.dtype
         device_type = 'cuda' if cost_matrix.is_cuda else 'cpu'
 
-        # Disable autocast and force FP32 — FP16 exp(-x) underflows for x > ~10
+        # Disable autocast and force FP32 for high precision stability
         with torch.amp.autocast(device_type, enabled=False):
             cost_matrix = cost_matrix.float()
             B, N, M = cost_matrix.shape
 
-            # Uniform marginals
-            mu = torch.full((B, N), 1.0 / N, device=cost_matrix.device, dtype=torch.float32)
-            nu = torch.full((B, M), 1.0 / M, device=cost_matrix.device, dtype=torch.float32)
+            # Uniform marginals (in log space)
+            # log(1/N) = -log(N)
+            log_mu = torch.full((B, N), -torch.log(torch.tensor(N, dtype=torch.float32, device=cost_matrix.device)), device=cost_matrix.device, dtype=torch.float32)
+            log_nu = torch.full((B, M), -torch.log(torch.tensor(M, dtype=torch.float32, device=cost_matrix.device)), device=cost_matrix.device, dtype=torch.float32)
 
-            # Gibbs kernel
-            K = torch.exp(-cost_matrix / self.reg)
-            K = K.clamp(min=1e-8)  # Numerical stability
+            # Gibbs kernel in log space
+            log_K = -cost_matrix / self.reg
 
-            u = torch.ones_like(mu)
+            log_u = torch.zeros_like(log_mu)
+            log_v = torch.zeros_like(log_nu)
+
+            # Log-domain Sinkhorn iterations
             for _ in range(self.num_iter):
-                v = nu / (torch.bmm(K.transpose(1, 2), u.unsqueeze(2)).squeeze(2) + 1e-8)
-                u = mu / (torch.bmm(K, v.unsqueeze(2)).squeeze(2) + 1e-8)
+                log_v = log_nu - torch.logsumexp(log_K + log_u.unsqueeze(2), dim=1)
+                log_u = log_mu - torch.logsumexp(log_K + log_v.unsqueeze(1), dim=2)
 
-            # Transport plan: P = diag(u) @ K @ diag(v)
-            P = u.unsqueeze(2) * K * v.unsqueeze(1)
+            # Reconstruct transport plan P in log domain, then exponentiate once
+            log_P = log_u.unsqueeze(2) + log_K + log_v.unsqueeze(1)
+            P = torch.exp(log_P)
 
         return P.to(orig_dtype)
 

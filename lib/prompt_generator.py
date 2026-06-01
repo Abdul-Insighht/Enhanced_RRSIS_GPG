@@ -103,6 +103,24 @@ class DifferentiableGPG(nn.Module):
 
         return torch.stack([expected_x, expected_y], dim=-1)  # (B, 2)
 
+    def _hard_topk_coords(self, heatmap):
+        """
+        Extract the exact coordinate of the maximum peak (highest activation).
+        Returns coordinates in [0, 1] grid space.
+        """
+        B, H, W = heatmap.shape
+        flat = heatmap.view(B, -1)
+        max_idx = flat.argmax(dim=-1)  # (B,)
+
+        # Convert flat index to y, x coordinates normalized to [0, 1]
+        # Prevent division by zero if grid has size 1
+        denom_h = float(max(H - 1, 1))
+        denom_w = float(max(W - 1, 1))
+        cy = (max_idx // W).float() / denom_h
+        cx = (max_idx % W).float() / denom_w
+
+        return torch.stack([cx, cy], dim=-1)  # (B, 2)
+
     def forward(self, P, text_mask, original_image_size, device):
         """
         Generate differentiable geometric prompts from OT transport plan.
@@ -143,17 +161,24 @@ class DifferentiableGPG(nn.Module):
             indexing='ij'
         )
 
-        # 5. Extract K points via iterative soft-argmax with Gaussian suppression
+        # 5. Extract K points via iterative STE-based argmax with Gaussian suppression
         all_points = []
         current_heatmap = heatmap_refined
 
         for k in range(self.num_points):
             # Spatial soft-argmax on current (possibly suppressed) heatmap
-            coord = self._spatial_soft_argmax(current_heatmap, grid_x, grid_y)  # (B, 2)
+            soft_coord = self._spatial_soft_argmax(current_heatmap, grid_x, grid_y)  # (B, 2)
+            # Exact hard peak extraction (non-diff but precise)
+            hard_coord = self._hard_topk_coords(current_heatmap)  # (B, 2)
+
+            # Straight-Through Estimator (STE)
+            # Forward: exact hard peak coordinates
+            # Backward: gradients flow through the soft-argmax path
+            coord = hard_coord + (soft_coord - soft_coord.detach())
             all_points.append(coord)
 
             if k < self.num_points - 1:
-                # Gaussian suppression around the extracted point
+                # Gaussian suppression around the extracted point (exact coord)
                 cx = coord[:, 0].view(B, 1, 1)  # (B, 1, 1) — x center
                 cy = coord[:, 1].view(B, 1, 1)  # (B, 1, 1) — y center
 

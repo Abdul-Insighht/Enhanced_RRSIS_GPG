@@ -1,50 +1,46 @@
 #!/bin/bash
 # ==============================================================================
-#                 Enhanced_RRSIS_UOT v3 — GPU Training Script
+#                 Enhanced_RRSIS_UOT v4 — GPU Training Script
 # ==============================================================================
-# Architecture: SAM3 + Dynamic LoRA + Multi-Scale OT + Differentiable GPG
+# Architecture: SAM3 + Dynamic LoRA + Multi-Scale OT + Differentiable GPG (v4)
 #
 # Core Enhancements:
 #   1. Text-Guided Dynamic LoRA (text-conditioned vision adapters)
-#   2. Contrastive Language-Image Loss (InfoNCE V-L alignment)
-#   3. Multi-Scale OT Feature Alignment (differentiable Sinkhorn)
-#   4. OHEM + Focal Dice + Boundary Loss (hard pixel mining)
-#   5. Differentiable GPG (spatial soft-argmax, end-to-end gradient flow)
-#
-# v3 Fix: Removed gradient blockers (@torch.no_grad, topk, floor_div)
-#         from GPG and Sinkhorn modules. Segmentation loss now optimizes
-#         prompt placement end-to-end.
+#   2. Log-Domain Sinkhorn Multi-Scale OT Feature Alignment (100% NaN-proof)
+#   3. Differentiable GPG (Straight-Through Estimator Top-K, crisp point prompts)
+#   4. Soft Query Selection (Argmax -> Softmax, differentiable DETR queries)
+#   5. Text-Guided Boundary Loss (Edge-focused cross-modal supervision)
+#   6. Joint Random Flips Augmentation (Geometric aerial invariance)
 #
 # LR Schedule: Linear Warmup (3 epochs) → Cosine Decay with Floor (eta_min=3e-6)
 # Early Stopping: patience=8 (auto-stop if no improvement for 8 epochs)
 #
-# Target Performance: oIoU ≥ 82%, mIoU ≥ 72% on RRSIS-D validation
+# Target Performance: oIoU ≥ 82.5%, mIoU ≥ 72.5% on RRSIS-D validation
 #
 # Usage:
 #   bash fine.sh [dataset_name] [data_root] [sam3_ckpt]
 #
 # Examples:
 #   bash fine.sh rrsis_d /path/to/data ./pre-trained-weights/sam3.pt
-#   bash fine.sh rrsis_hr /path/to/data ./pre-trained-weights/sam3.pt
 # ==============================================================================
 
 # Default parameters
 DATASET=${1:-rrsis_d}
 DATA_ROOT=${2:-./data}
 SAM3_CKPT=${3:-./pre-trained-weights/sam3.pt}
-OUTPUT_DIR="./output/${DATASET}_enhanced_v3"
+OUTPUT_DIR="./output/${DATASET}_enhanced_v4"
 
 # Highlight setup information
 echo "=============================================================================="
-echo "🚀 Enhanced_RRSIS_UOT v3 — Differentiable GPG Training"
+echo "🚀 Enhanced_RRSIS_UOT v4 — Stable Differentiable GPG Training"
 echo "📊 Dataset:     ${DATASET}"
 echo "📂 Data Root:   ${DATA_ROOT}"
 echo "💾 SAM3 Ckpt:   ${SAM3_CKPT}"
 echo "📁 Output Dir:  ${OUTPUT_DIR}"
-echo "🔧 Enhancements: Dynamic LoRA | Contrastive | Multi-Scale OT | OHEM | Diff-GPG"
+echo "🔧 Enhancements: Log-Sinkhorn | STE-GPG | Soft Query Selection | Text Boundary"
 echo "📈 Schedule:    3-epoch warmup → Cosine decay (floor=3e-6, never zero)"
 echo "🛑 Early Stop:  patience=8"
-echo "🆕 v3 Fix:      End-to-end differentiable prompt generation"
+echo "🆕 v4 Fix:      Log-Domain Sinkhorn + STE point prompts + Soft selection"
 echo "=============================================================================="
 
 # Ensure output directory exists
@@ -62,7 +58,7 @@ if [ ! -f "${SAM3_CKPT}" ]; then
     fi
 fi
 
-# Run training with optimal hyperparameters for v3
+# Run training with optimal hyperparameters for v4
 python train.py \
     --dataset ${DATASET} \
     --data_root ${DATA_ROOT} \
@@ -86,7 +82,10 @@ python train.py \
     --gradient_checkpointing \
     --seed 42 \
     --num_workers 4 \
-    --contrastive_weight 0.1 \
+    --contrastive_weight 0.0 \
+    --use_boundary_loss \
+    --boundary_weight 0.3 \
+    --selection_temp 0.1 \
     --ohem_hard_ratio 0.3 \
     --ot_reg 0.1 \
     --ot_num_iter 10 \
