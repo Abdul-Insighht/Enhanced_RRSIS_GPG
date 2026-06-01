@@ -242,9 +242,9 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, device, e
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             if torch.isfinite(grad_norm):
                 scaler.step(optimizer)
-                scaler.update()
             else:
                 print(f"[WARNING] NaN/Inf gradient norm detected at batch {batch_idx}, skipping optimizer step to prevent weight pollution")
+            scaler.update()
             optimizer.zero_grad()
 
         # Metrics
@@ -273,9 +273,9 @@ def train_one_epoch(model, train_loader, optimizer, scheduler, scaler, device, e
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         if torch.isfinite(grad_norm):
             scaler.step(optimizer)
-            scaler.update()
         else:
             print("[WARNING] NaN/Inf gradient norm detected at the end of epoch, skipping optimizer step to prevent weight pollution")
+        scaler.update()
         optimizer.zero_grad()
 
     return metric_logger.meters['loss'].global_avg, metric_logger.meters['iou'].global_avg
