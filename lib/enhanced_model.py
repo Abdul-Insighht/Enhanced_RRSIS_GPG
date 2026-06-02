@@ -509,16 +509,22 @@ class Enhanced_RRSIS_UOT(nn.Module):
             if pred_logits is not None:
                 scores = pred_logits.squeeze(-1)  # (B, N)
                 
+                # Hard selection (argmax) - used in forward pass to prevent blurry / partial masks
+                best_idx = scores.argmax(dim=-1)
+                batch_idx = torch.arange(batch_size, device=pred_masks.device)
+                hard_masks = pred_masks[batch_idx, best_idx].unsqueeze(1)  # (B, 1, H_mask, W_mask)
+                
                 if self.training:
-                    # Soft selection: Differentiable mixture of all query masks weighted by softmax scores
+                    # Soft selection (softmax mixture) for gradient routing in backward pass
                     weights = F.softmax(scores / self.selection_temp, dim=-1)  # (B, N)
-                    best_masks = (pred_masks * weights.unsqueeze(-1).unsqueeze(-1)).sum(dim=1, keepdim=True)  # (B, 1, H_mask, W_mask)
+                    soft_masks = (pred_masks * weights.unsqueeze(-1).unsqueeze(-1)).sum(dim=1, keepdim=True)  # (B, 1, H_mask, W_mask)
+                    
+                    # Straight-Through Estimator (STE)
+                    # Forward: hard selected mask (completely sharp and target-representing)
+                    # Backward: soft mask (gradients flow to scores and query mask predictions)
+                    best_masks = hard_masks + (soft_masks - soft_masks.detach())
                 else:
-                    # Hard selection during evaluation/inference (crisp and exact)
-                    best_idx = scores.argmax(dim=-1)
-                    batch_idx = torch.arange(batch_size, device=pred_masks.device)
-                    best_masks = pred_masks[batch_idx, best_idx]
-                    best_masks = best_masks.unsqueeze(1)
+                    best_masks = hard_masks
             else:
                 best_masks = pred_masks[:, 0:1]
 
